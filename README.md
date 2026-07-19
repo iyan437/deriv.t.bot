@@ -1,2 +1,2 @@
 # deriv.t.bot
-Deriv tv with Whatsapp alerts 
+Deriv tv with email alerts 
