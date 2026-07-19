@@ -1,27 +1,20 @@
-yaml
-name: Deriv Signal Bot
-
+name: Run Deriv Bot
 on:
-  schedule:
-    - cron: '/5    *'   # every 5 min
-  workflow_dispatch:         # manual trigger
+  workflow_dispatch: # lets you click "Run" manually
 
 jobs:
-  check-signals:
+  run-bot:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          node-version: 20
-      - run: npm install ws node-fetch@2.7.0
-      - run: node deriv-signal.js
+          python-version: '3.10'
+      - name: Install deps
+        run: pip install -r requirements.txt
+      - name: Run bot
         env:
-          DERIV_APP_ID: ${{ secrets.DERIV_APP_ID }}
-          DERIV_TOKEN: ${{ secrets.DERIV_TOKEN }}
-          WP_CLIENT_ID: ${{ secrets.WP_CLIENT_ID }}
-          WP_SECRET: ${{ secrets.WP_SECRET }}
-          WP_PHONE: ${{ secrets.WP_PHONE }}
-          SG_API_KEY: ${{ secrets.SG_API_KEY }}
-          TO_EMAIL: ${{ secrets.TO_EMAIL }}
-          NOTIFY_METHOD: ${{ secrets.NOTIFY_METHOD }}
+          DERIV_TOKEN: ${{ secrets.DERIV_TOKEN }} # Set this in Settings > Secrets
+          DERIV_APP_ID: 1089
+        run: python bot.py
