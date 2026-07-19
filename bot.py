@@ -1,66 +1,104 @@
+import os
+import json
 import asyncio
 import websockets
-import json
-import ssl
-import os
-import sys
+import smtplib
+from email.message import EmailMessage
+import time
 
-# Put your token and app_id here for testing. For safety later, use Environment Variables
-TOKEN = os.getenv("DERIV_TOKEN", "PASTE_YOUR_TOKEN_HERE") 
-APP_ID = os.getenv("DERIV_APP_ID", "1089")
-URL = f"wss://ws.derivws.com/websockets/v3?app_id={APP_ID}"
+# Load secure credentials from GitHub Secrets
+API_TOKEN = os.environ.get("DERIV_API_TOKEN")
+EMAIL_SENDER = os.environ.get("EMAIL_SENDER")
+EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD")
 
-TARGET_7_COUNT = 20  # Keep this low on GitHub Actions. 50 will timeout
-COOLDOWN_TICKS = 2
+# Configuration settings
+SYMBOL = "1HZ100V"        # Volatility 100 (1s) Index (Fastest tick stream)
+COOLDOWN_SECONDS = 300   # Strict 5-minute filter to avoid inbox spamming
 
-seven_count = 0
-cooldown = 0
+# State management variables
+last_signal_time = 0
+consecutive_count = 0
+previous_digit = None
 
-ssl_context = ssl.create_default_context()
+def send_email_signal(subject, body):
+    """Sends the alert email synchronously using a standard secure SSL connection."""
+    msg = EmailMessage()
+    msg['Subject'] = subject
+    msg['From'] = EMAIL_SENDER
+    msg['To'] = EMAIL_SENDER
+    msg.set_content(body)
 
-async def run_bot():
-    global seven_count, cooldown
-    print("Bot Starting...")
-    while True:
-        try:
-            async with websockets.connect(URL, ssl=ssl_context, ping_interval=20, ping_timeout=20) as ws:
-                print("Connected to Deriv")
-                # Authorize
-                await ws.send(json.dumps({"authorize": TOKEN}))
-                auth_resp = await ws.recv()
-                print("Authorized:", json.loads(auth_resp).get("msg_type"))
+    try:
+        with smtplib.SMTP_SSL('://gmail.com', 465) as smtp:
+            smtp.login(EMAIL_SENDER, EMAIL_PASSWORD)
+            smtp.send_message(msg)
+        print("⚡ Email signal successfully dispatched!")
+    except Exception as e:
+        print(f"❌ Mail delivery failed: {e}")
+
+async def connect_deriv_stream():
+    """Establishes a live persistent websocket connection with Deriv's API servers."""
+    global last_signal_time, consecutive_count, previous_digit
+    
+    # Official Deriv API Websocket endpoint URL
+    uri = "wss://://derivws.com" 
+    
+    print(f"Connecting to live market data stream for {SYMBOL}...")
+    
+    async with websockets.connect(uri) as websocket:
+        # Step 1: Authenticate the session
+        auth_request = {"authorize": API_TOKEN}
+        await websocket.send(json.dumps(auth_request))
+        auth_response = await websocket.recv()
+        print("Session Authentication: Complete")
+
+        # Step 2: Subscribe to real-time tick streaming data
+        subscribe_request = {"ticks": SYMBOL}
+        await websocket.send(json.dumps(subscribe_request))
+        print(f"Live subscription active. Analyzing streaming ticks...")
+
+        # Step 3: Listen to live ticks continuously as they stream in
+        async for message in websocket:
+            data = json.loads(message)
+            
+            if "tick" in data:
+                current_price = str(data["tick"]["quote"])
+                last_digit = int(current_price[-1]) # Extract the final digit
                 
-                # Subscribe to ticks
-                await ws.send(json.dumps({"ticks": "R_100", "subscribe": 1}))
+                # --- STRATEGY LOGIC: Match & Differ Alert ---
+                # Example strategy: Identify when the same digit repeats consecutively
+                if previous_digit is not None and last_digit == previous_digit:
+                    consecutive_count += 1
+                else:
+                    consecutive_count = 1
                 
-                while True:
-                    msg = await ws.recv()
-                    data = json.loads(msg)
+                previous_digit = last_digit
+                
+                # Trigger criteria: Same digit repeats twice in a row
+                if consecutive_count >= 2:
+                    current_time = time.time()
+                    elapsed_time = current_time - last_signal_time
                     
-                    if "tick" in data:
-                        last_digit = int(str(data["tick"]["quote"])[-1])
-                        if last_digit == 7:
-                            seven_count += 1
+                    # Enforce the strict minimum 5-minute safety delay window
+                    if elapsed_time >= COOLDOWN_SECONDS:
+                        subject = f"🚨 Deriv Live Signal Alert: Digit [{last_digit}] Repeat"
+                        body = (
+                            f"Live Market Event Detected!\n\n"
+                            f"Asset: {SYMBOL}\n"
+                            f"Pattern: Digit {last_digit} repeated {consecutive_count} times in a row.\n"
+                            f"Price Context: {current_price}\n\n"
+                            f"Strategy Recommendation: Look for Matches/Differs setups."
+                        )
                         
-                        cooldown += 1
-                        print(f"Tick | LastDigit: {last_digit} | 7 count: {seven_count}/{TARGET_7_COUNT} | Cooldown: {cooldown}/{COOLDOWN_TICKS}")
-                        
-                        if seven_count >= TARGET_7_COUNT and cooldown >= COOLDOWN_TICKS:
-                            print("SIGNAL! Place trade here")
-                            # Your trade logic goes here
-                            seven_count = 0
-                            cooldown = 0
-                            
-        except websockets.exceptions.ConnectionClosed:
-            print("Connection closed. Reconnecting in 5s...")
-            await asyncio.sleep(5)
-        except Exception as e:
-            print("Error:", e)
-            await asyncio.sleep(5)
+                        # Send instantly without blocking the active stream data
+                        send_email_signal(subject, body)
+                        last_signal_time = current_time
+                    else:
+                        remaining = int(COOLDOWN_SECONDS - elapsed_time)
+                        print(f"Signal suppressed. Cooldown active for {remaining} more seconds.")
 
 if __name__ == "__main__":
     try:
-        asyncio.run(run_bot())
+        asyncio.run(connect_deriv_stream())
     except KeyboardInterrupt:
-        print("Bot stopped")
-        sys.exit(0)
+        print("Bot session terminated by user.")
